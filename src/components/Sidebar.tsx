@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Home, MessageSquare, Users, Settings, LogOut } from 'lucide-react';
+import { Home, MessageSquare, Users, Settings, LogOut, Music } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { motion } from 'framer-motion';
 
@@ -11,6 +11,7 @@ const Sidebar = () => {
     { icon: Home, label: 'Home', to: '/' },
     { icon: MessageSquare, label: 'Channels', to: '/channels' },
     { icon: Users, label: 'Friends', to: '/friends' },
+    { icon: Music, label: 'Music', to: '/music' },
     { icon: Settings, label: 'Settings', to: '/settings' },
   ];
 

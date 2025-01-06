@@ -26,3 +26,27 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-gray-500;
 }
+
+.audio-player {
+  --player-bg: rgba(99, 102, 241, 0.1);
+  --player-color: rgb(129, 140, 248);
+  
+  background: var(--player-bg);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+
+.audio-player::-webkit-media-controls-panel {
+  background: var(--player-bg);
+}
+
+.audio-player::-webkit-media-controls-current-time-display,
+.audio-player::-webkit-media-controls-time-remaining-display {
+  color: var(--player-color);
+}
+
+.audio-player::-webkit-media-controls-play-button,
+.audio-player::-webkit-media-controls-timeline,
+.audio-player::-webkit-media-controls-volume-slider {
+  accent-color: var(--player-color);
+}
