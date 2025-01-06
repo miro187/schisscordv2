@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
-import { Plus, Hash, Volume2, ChevronDown, Settings, Smile, Image as ImageIcon, UserPlus, X } from 'lucide-react';
+import { Plus, Hash, Volume2, ChevronDown, Settings, Smile, Image as ImageIcon, UserPlus, X, MoreVertical } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import VoiceChat from '../components/VoiceChat';
@@ -33,6 +33,7 @@ interface Channel {
 
 interface DatabaseUser {
   username: string;
+  avatar_url?: string | null;
 }
 
 interface DatabaseChannelMessage {
@@ -44,6 +45,7 @@ interface DatabaseChannelMessage {
   updated_at: string;
   profiles: {
     username: string;
+    avatar_url?: string | null;
   } | null;
 }
 
@@ -52,9 +54,14 @@ interface ChannelMessage {
   content: string;
   user_id: string;
   created_at: string;
-  user: {
+  profiles: {
     username: string;
+    avatar_url?: string | null;
   };
+  file_url?: string;
+  file_name?: string;
+  file_type?: string;
+  file_size?: number;
 }
 
 interface ServerMember {
@@ -62,6 +69,7 @@ interface ServerMember {
   role: string;
   user: {
     username: string;
+    avatar_url?: string | null;
   };
 }
 
@@ -147,6 +155,7 @@ interface DatabaseServerMember {
   role: string;
   profiles: {
     username: string;
+    avatar_url?: string | null;
   };
 }
 
@@ -165,6 +174,38 @@ interface VoiceChannelMemberData {
   user_id: string;
   profiles: ProfileData;
 }
+
+// Hilfsfunktion zum Erkennen und Umwandeln von URLs in Links
+const parseMessageContent = (content: string) => {
+  // Regex für URL-Erkennung (http, https, www)
+  const urlRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
+  
+  // Teile den Text in Stücke auf, wobei URLs separat behandelt werden
+  const parts = content.split(urlRegex);
+  
+  return parts.map((part, index) => {
+    if (!part) return null;
+    
+    // Prüfe ob der Teil eine URL ist
+    if (urlRegex.test(part)) {
+      const href = part.startsWith('www.') ? `https://${part}` : part;
+      return (
+        <a
+          key={index}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-400 hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {part}
+        </a>
+      );
+    }
+    
+    return <span key={index}>{part}</span>;
+  });
+};
 
 const Channels = () => {
   const { user } = useAuth();
@@ -202,6 +243,38 @@ const Channels = () => {
   const [activeDropdownId, setActiveDropdownId] = useState<string | null>(null);
   const [onlineUsers, setOnlineUsers] = useState<OnlineStatus>({});
   const [channelMembers, setChannelMembers] = useState<ChannelMember[]>([]);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isNearBottom = () => {
+    if (messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      const threshold = 100; // Pixel-Schwelle zum unteren Rand
+      return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    }
+    return false;
+  };
+
+  const handleScroll = () => {
+    if (messagesContainerRef.current) {
+      setShouldAutoScroll(isNearBottom());
+    }
+  };
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.addEventListener('scroll', handleScroll);
+      return () => container.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
+
+  const scrollToBottom = () => {
+    if (messagesContainerRef.current && shouldAutoScroll) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }
+  };
 
   useEffect(() => {
     fetchServers();
@@ -210,13 +283,11 @@ const Channels = () => {
   useEffect(() => {
     if (activeServer) {
       fetchCategoriesAndChannels(activeServer.id);
-    }
-  }, [activeServer]);
-
-  useEffect(() => {
-    if (activeServer) {
       loadServerMembers();
       loadPendingInvites();
+      // Reset activeChannel when server changes
+      setActiveChannel(null);
+      setMessages([]);
     }
   }, [activeServer]);
 
@@ -226,11 +297,54 @@ const Channels = () => {
     }
   }, [user]);
 
+  // Separate useEffect für das Laden von Nachrichten beim Channel-Wechsel
+  useEffect(() => {
+    if (activeChannel?.type === 'text') {
+      // Initial load
+      loadChannelMessages();
+
+      // Polling setup
+      const pollInterval = setInterval(loadChannelMessages, 1000);
+
+      // Cleanup
+      return () => {
+        clearInterval(pollInterval);
+      };
+    }
+  }, [activeChannel]);
+
+  // Modifizierte loadChannelMessages Funktion
+  const loadChannelMessages = async () => {
+    if (!activeChannel) return;
+
+    try {
+      const { data: messages, error } = await supabase
+        .from('channel_messages')
+        .select(`
+          *,
+          profiles:user_id (
+            username,
+            avatar_url
+          )
+        `)
+        .eq('channel_id', activeChannel.id)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error loading messages:', error);
+        return;
+      }
+
+      setMessages(messages || []);
+    } catch (err) {
+      console.error('Error in loadChannelMessages:', err);
+    }
+  };
+
   // Neue useEffect für globale Channel-Subscriptions
   useEffect(() => {
     if (!channels.length) return;
 
-    // Erstelle eine Subscription für jeden Text-Channel
     const subscriptions: ChannelSubscription[] = channels
       .filter(channel => channel.type === 'text')
       .map(channel => {
@@ -250,74 +364,43 @@ const Channels = () => {
                 filter: `channel_id=eq.${channel.id}`
               },
               async (payload) => {
-                console.log(`Received message event for channel ${channel.id}:`, payload);
+                if (channel.id === activeChannel?.id) {
+                  if (payload.eventType === 'INSERT') {
+                    const { data: messageData } = await supabase
+                      .from('channel_messages')
+                      .select('*, profiles:user_id(username, avatar_url)')
+                      .eq('id', payload.new.id)
+                      .single();
 
-                if (payload.eventType === 'DELETE') {
-                  setMessages(prev => prev.filter(msg => msg.id !== payload.old.id));
-                  return;
-                }
-
-                if (payload.eventType === 'INSERT') {
-                  const { data: messageData } = await supabase
-                    .from('channel_messages')
-                    .select(`
-                      *,
-                      profiles:user_id (
-                        username
-                      )
-                    `)
-                    .eq('id', payload.new.id)
-                    .single();
-
-                  if (!messageData) {
-                    console.error('Could not fetch message data');
-                    return;
-                  }
-
-                  const newMessage: ChannelMessage = {
-                    id: messageData.id,
-                    content: messageData.content,
-                    user_id: messageData.user_id,
-                    created_at: messageData.created_at,
-                    user: {
-                      username: messageData.profiles?.username || 'Unbekannter Benutzer'
-                    }
-                  };
-
-                  if (activeChannel?.id === channel.id) {
-                    setMessages(prev => {
-                      const exists = prev.some(msg => 
-                        msg.id === newMessage.id || 
-                        (msg.content === newMessage.content && 
-                         msg.user_id === newMessage.user_id &&
-                         new Date(msg.created_at).getTime() >= new Date(newMessage.created_at).getTime() - 1000)
-                      );
+                    if (messageData) {
+                      setMessages(prev => [...prev, {
+                        id: messageData.id,
+                        content: messageData.content,
+                        user_id: messageData.user_id,
+                        created_at: messageData.created_at,
+                        profiles: {
+                          username: messageData.profiles?.username || 'Unknown',
+                          avatar_url: messageData.profiles?.avatar_url
+                        }
+                      }]);
                       
-                      if (exists) return prev;
-                      return [...prev, newMessage];
-                    });
-
-                    if (messagesContainerRef.current) {
-                      const container = messagesContainerRef.current;
-                      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
-                      if (isNearBottom) {
-                        setTimeout(scrollToBottom, 50);
+                      if (shouldAutoScroll) {
+                        setTimeout(scrollToBottom, 100);
                       }
                     }
-                  } else {
-                    setUnreadCounts(prev => ({
-                      ...prev,
-                      [channel.id]: (prev[channel.id] || 0) + 1
-                    }));
+                  } else if (payload.eventType === 'DELETE') {
+                    setMessages(prev => prev.filter(msg => msg.id !== payload.old.id));
+                  } else if (payload.eventType === 'UPDATE') {
+                    // Lade die Nachrichten neu wenn eine Nachricht aktualisiert wurde
+                    loadChannelMessages();
                   }
                 }
               }
             )
-            .subscribe()
+            .subscribe(),
         };
       });
 
-    // Cleanup function
     return () => {
       console.log('Cleaning up channel subscriptions');
       subscriptions.forEach(({ subscription }) => {
@@ -325,83 +408,7 @@ const Channels = () => {
         supabase.removeChannel(subscription);
       });
     };
-  }, [channels, activeChannel?.id]); // Abhängigkeiten aktualisiert
-
-  // Separate useEffect für das Laden von Nachrichten beim Channel-Wechsel
-  useEffect(() => {
-    if (activeChannel?.type === 'text') {
-      // Initial load
-      loadChannelMessages();
-
-      // Polling setup
-      const pollInterval = setInterval(loadChannelMessages, 1000);
-
-      // Realtime subscription für neue Nachrichten (als Backup)
-      const channel = supabase.channel(`channel_${activeChannel.id}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'channel_messages',
-            filter: `channel_id=eq.${activeChannel.id}`
-          },
-          (payload) => {
-            loadChannelMessages(); // Lade alle Nachrichten neu
-          }
-        )
-        .subscribe();
-
-      // Cleanup
-      return () => {
-        clearInterval(pollInterval);
-        channel.unsubscribe();
-      };
-    }
-  }, [activeChannel]);
-
-  // Modifizierte loadChannelMessages Funktion
-  const loadChannelMessages = async () => {
-    if (!activeChannel) return;
-
-    try {
-      const { data: messages, error } = await supabase
-        .from('channel_messages')
-        .select(`
-          *,
-          user:user_id (
-            id,
-            username,
-            avatar_url
-          )
-        `)
-        .eq('channel_id', activeChannel.id)
-        .order('created_at', { ascending: true });
-
-      if (error) {
-        console.error('Error loading messages:', error);
-        return;
-      }
-
-      // Vergleiche mit aktuellen Nachrichten
-      const currentMessages = messages || [];
-      
-      // Setze nur wenn es Änderungen gibt
-      setMessages(prev => {
-        if (JSON.stringify(prev) !== JSON.stringify(currentMessages)) {
-          return currentMessages;
-        }
-        return prev;
-      });
-
-      // Scrolle nach unten wenn neue Nachrichten
-      if (currentMessages.length > 0) {
-        setTimeout(scrollToBottom, 100);
-      }
-    } catch (err) {
-      console.error('Error in loadChannelMessages:', err);
-    }
-  };
+  }, [channels, activeChannel?.id]);
 
   // Presence tracking für die gesamte Anwendung
   useEffect(() => {
@@ -499,7 +506,12 @@ const Channels = () => {
     if (categoriesResponse.error) console.error('Error fetching categories:', categoriesResponse.error);
     if (channelsResponse.error) console.error('Error fetching channels:', channelsResponse.error);
 
-    setCategories(categoriesResponse.data || []);
+    const newCategories = categoriesResponse.data || [];
+    setCategories(newCategories);
+    
+    // Automatisch alle Kategorien ausklappen
+    setExpandedCategories(new Set(newCategories.map(cat => cat.id)));
+    
     setChannels(channelsResponse.data || []);
   };
 
@@ -695,19 +707,12 @@ const Channels = () => {
     }
   };
 
-  // Scroll to bottom
-  const scrollToBottom = () => {
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-    }
-  };
-
   const deleteMessage = async (messageId: string) => {
     try {
       // Optimistisch die Nachricht aus der UI entfernen
       setMessages(prev => prev.filter(msg => msg.id !== messageId));
 
-      // Dann aus der Datenbank löschen
+      // Aus der Datenbank löschen
       const { error } = await supabase
         .from('channel_messages')
         .delete()
@@ -715,9 +720,8 @@ const Channels = () => {
 
       if (error) {
         console.error('Error deleting message:', error);
-        // Bei Fehler die Nachricht wieder hinzufügen
+        // Bei Fehler die Nachrichten neu laden
         loadChannelMessages();
-        return;
       }
     } catch (err) {
       console.error('Error:', err);
@@ -736,7 +740,8 @@ const Channels = () => {
           user_id,
           role,
           profiles!server_members_user_id_fkey (
-            username
+            username,
+            avatar_url
           )
         `)
         .eq('server_id', activeServer.id)
@@ -751,7 +756,8 @@ const Channels = () => {
         user_id: member.user_id,
         role: member.role,
         user: {
-          username: member.profiles.username
+          username: member.profiles.username,
+          avatar_url: member.profiles.avatar_url
         }
       }));
 
@@ -946,13 +952,23 @@ const Channels = () => {
         content: messageContent,
         user_id: user.id,
         created_at: new Date().toISOString(),
-        user: {
-          username: userData.username
+        profiles: {
+          username: userData.username,
+          avatar_url: userData.avatar_url || null
         }
       };
 
       setMessages(prev => [...prev, optimisticMessage]);
-      scrollToBottom();
+      
+      // Immer nach unten scrollen bei eigenen Nachrichten, mit Verzögerung für DOM-Update
+      setTimeout(() => {
+        if (messagesContainerRef.current) {
+          const container = messagesContainerRef.current;
+          container.scrollTop = container.scrollHeight;
+          // Setze shouldAutoScroll auf true, da wir jetzt am unteren Ende sind
+          setShouldAutoScroll(true);
+        }
+      }, 100);
 
       // Nachricht in die Datenbank einfügen
       const { error } = await supabase
@@ -974,6 +990,161 @@ const Channels = () => {
     } catch (err) {
       console.error('Error:', err);
     }
+  };
+
+  const uploadFile = async (file: File) => {
+    if (!activeChannel || !user) return;
+    
+    setUploading(true);
+    try {
+      // Prüfe Dateigröße (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('Datei darf nicht größer als 5MB sein');
+      }
+
+      // Generiere einen einzigartigen Dateinamen
+      const fileName = `${Date.now()}-${file.name}`;
+      const filePath = `${activeChannel.id}/${fileName}`;
+
+      // Lade die Datei hoch
+      const { error: uploadError } = await supabase.storage
+        .from('chat-files')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      // Hole die öffentliche URL
+      const { data } = supabase.storage
+        .from('chat-files')
+        .getPublicUrl(filePath);
+
+      // Hole den Benutzernamen
+      const { data: userData } = await supabase
+        .from('profiles')
+        .select('username, avatar_url')
+        .eq('id', user.id)
+        .single();
+
+      if (!userData) {
+        throw new Error('Could not fetch user data');
+      }
+
+      // Optimistische UI-Aktualisierung
+      const optimisticMessage: ChannelMessage = {
+        id: crypto.randomUUID(),
+        content: `📎 ${file.name}`,
+        user_id: user.id,
+        created_at: new Date().toISOString(),
+        profiles: {
+          username: userData.username,
+          avatar_url: userData.avatar_url || null
+        },
+        file_url: data.publicUrl,
+        file_name: file.name,
+        file_type: file.type,
+        file_size: file.size
+      };
+
+      setMessages(prev => [...prev, optimisticMessage]);
+      
+      // Sende die Nachricht mit der Datei
+      const { error: messageError } = await supabase
+        .from('channel_messages')
+        .insert({
+          channel_id: activeChannel.id,
+          user_id: user.id,
+          content: `📎 ${file.name}`,
+          file_url: data.publicUrl,
+          file_name: file.name,
+          file_type: file.type,
+          file_size: file.size
+        });
+
+      if (messageError) throw messageError;
+
+    } catch (error: any) {
+      console.error('Error uploading file:', error);
+      alert(error.message || 'Fehler beim Hochladen der Datei');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const downloadFile = async (fileUrl: string, fileName: string) => {
+    try {
+      const response = await fetch(fileUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert('Fehler beim Herunterladen der Datei');
+    }
+  };
+
+  const renderFilePreview = (message: ChannelMessage) => {
+    if (!message.file_url || !message.file_type) return null;
+
+    if (message.file_type.startsWith('image/')) {
+      return (
+        <img 
+          src={message.file_url} 
+          alt={message.file_name} 
+          className="max-w-xs rounded-lg cursor-pointer hover:opacity-90"
+          onClick={() => window.open(message.file_url, '_blank')}
+        />
+      );
+    }
+
+    if (message.file_type === 'text/plain') {
+      return (
+        <div className="max-w-xs p-3 bg-gray-700 rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-gray-300">{message.file_name}</span>
+            <button
+              onClick={() => message.file_url && downloadFile(message.file_url, message.file_name || 'file.txt')}
+              className="text-blue-400 hover:text-blue-300"
+            >
+              ⬇️
+            </button>
+          </div>
+          <div className="text-xs text-gray-400">
+            {formatFileSize(message.file_size || 0)}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="max-w-xs p-3 bg-gray-700 rounded-lg">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-300">{message.file_name}</span>
+          <button
+            onClick={() => message.file_url && downloadFile(message.file_url, message.file_name || 'file')}
+            className="text-blue-400 hover:text-blue-300"
+          >
+            ⬇️
+          </button>
+        </div>
+        <div className="text-xs text-gray-400 mt-1">
+          {formatFileSize(message.file_size || 0)}
+        </div>
+      </div>
+    );
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   return (
@@ -1156,15 +1327,23 @@ const Channels = () => {
               >
                 {messages.map(message => (
                   <div key={message.id} className="flex items-start gap-4 group mb-4 min-h-[40px]">
-                    <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center flex-shrink-0">
-                      <span className="text-lg font-bold text-white">
-                        {message.user.username.charAt(0).toUpperCase()}
-                      </span>
+                    <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                      {message.profiles?.avatar_url ? (
+                        <img 
+                          src={message.profiles.avatar_url} 
+                          alt={message.profiles?.username} 
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-lg font-bold text-white">
+                          {message.profiles?.username.charAt(0).toUpperCase()}
+                        </span>
+                      )}
                     </div>
                     <div className="flex-1 min-w-0 max-w-[calc(100%-120px)]">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-white">
-                          {message.user.username}
+                          {message.profiles.username}
                         </span>
                         <span className="text-xs text-gray-400">
                           {new Date(message.created_at).toLocaleString()}
@@ -1227,7 +1406,13 @@ const Channels = () => {
                         )}
                       </div>
                       <div className="mt-1">
-                        <p className="text-gray-100 break-all whitespace-pre-wrap overflow-hidden">{message.content}</p>
+                        {message.file_url ? (
+                          renderFilePreview(message)
+                        ) : (
+                          <p className="text-gray-100 break-all whitespace-pre-wrap overflow-hidden">
+                            {parseMessageContent(message.content)}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1255,6 +1440,23 @@ const Channels = () => {
                     >
                       <Smile size={24} />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-gray-400 hover:text-white"
+                      disabled={uploading}
+                    >
+                      <ImageIcon size={22} />
+                    </button>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) uploadFile(file);
+                      }}
+                    />
                     <input
                       type="text"
                       value={newMessage}
@@ -1333,10 +1535,18 @@ const Channels = () => {
                   .map(member => (
                     <div key={member.user_id} className="flex items-center gap-2">
                       <div className="relative">
-                        <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center">
-                          <span className="text-sm font-bold text-white">
-                            {member.user.username.charAt(0).toUpperCase()}
-                          </span>
+                        <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center overflow-hidden">
+                          {member.user.avatar_url ? (
+                            <img 
+                              src={member.user.avatar_url} 
+                              alt={member.user.username} 
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-sm font-bold text-white">
+                              {member.user.username.charAt(0).toUpperCase()}
+                            </span>
+                          )}
                         </div>
                         <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-gray-800"></div>
                       </div>

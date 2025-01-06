@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { Check, X } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface ServerInvite {
   id: string;
@@ -69,7 +70,6 @@ const ServerInvites = () => {
   const handleInvite = async (inviteId: string, accept: boolean) => {
     try {
       if (accept) {
-        // Akzeptiere die Einladung
         const { data: invite } = await supabase
           .from('server_invites')
           .select('server_id')
@@ -77,7 +77,6 @@ const ServerInvites = () => {
           .single();
 
         if (invite) {
-          // Füge den Benutzer als Mitglied hinzu
           await supabase
             .from('server_members')
             .insert({
@@ -88,14 +87,12 @@ const ServerInvites = () => {
         }
       }
 
-      // Lösche die Einladung
       await supabase
         .from('server_invites')
         .delete()
         .eq('id', inviteId);
 
-      // Aktualisiere die Einladungsliste
-      loadInvites();
+      setInvites(prev => prev.filter(invite => invite.id !== inviteId));
     } catch (err) {
       console.error('Error handling invite:', err);
     }
@@ -104,38 +101,58 @@ const ServerInvites = () => {
   if (invites.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-50 w-80">
-      {invites.map(invite => (
-        <div
-          key={invite.id}
-          className="bg-gray-800 rounded-lg shadow-lg p-4 mb-2 animate-slide-in"
-        >
-          <div className="flex items-start justify-between">
-            <div>
-              <h3 className="font-semibold text-white">
-                Servereinladung
-              </h3>
-              <p className="text-sm text-gray-300 mt-1">
-                {invite.inviter.username} lädt dich ein, dem Server "{invite.server.name}" beizutreten
-              </p>
+    <div className="fixed top-4 right-4 z-50 w-80 space-y-2">
+      <AnimatePresence>
+        {invites.map(invite => (
+          <motion.div
+            key={invite.id}
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
+            className="bg-gray-800/80 backdrop-blur-xl border border-gray-700/50 rounded-lg shadow-2xl overflow-hidden"
+          >
+            <div className="p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <motion.h3 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="font-semibold text-white bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent"
+                  >
+                    Servereinladung
+                  </motion.h3>
+                  <motion.p 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.1 }}
+                    className="text-sm text-gray-300 mt-1"
+                  >
+                    <span className="font-medium text-indigo-400">{invite.inviter.username}</span> lädt dich ein, dem Server <span className="font-medium text-purple-400">"{invite.server.name}"</span> beizutreten
+                  </motion.p>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 mt-4">
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => handleInvite(invite.id, false)}
+                  className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                >
+                  <X size={20} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => handleInvite(invite.id, true)}
+                  className="p-2 text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded-lg transition-colors"
+                >
+                  <Check size={20} />
+                </motion.button>
+              </div>
             </div>
-          </div>
-          <div className="flex justify-end gap-2 mt-4">
-            <button
-              onClick={() => handleInvite(invite.id, false)}
-              className="p-2 text-gray-400 hover:text-red-500 rounded"
-            >
-              <X size={20} />
-            </button>
-            <button
-              onClick={() => handleInvite(invite.id, true)}
-              className="p-2 text-gray-400 hover:text-green-500 rounded"
-            >
-              <Check size={20} />
-            </button>
-          </div>
-        </div>
-      ))}
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 };

@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
+import { motion } from 'framer-motion';
 
 const Layout = () => {
   const { user } = useAuth();
@@ -58,11 +59,25 @@ const Layout = () => {
   }, [user]);
 
   return (
-    <div className="flex h-screen bg-gray-900 text-gray-100">
-      <Sidebar />
-      <main className="flex-1 overflow-hidden">
-        <Outlet />
-      </main>
+    <div className="flex h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+      <motion.div
+        initial={{ opacity: 0, x: -20 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.3 }}
+        className="flex h-full w-full"
+      >
+        <Sidebar />
+        <main className="flex-1 overflow-hidden bg-gray-800/50 backdrop-blur-xl">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2 }}
+            className="h-full"
+          >
+            <Outlet />
+          </motion.div>
+        </main>
+      </motion.div>
     </div>
   );
 };

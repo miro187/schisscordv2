@@ -1,11 +1,26 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
+import { motion } from 'framer-motion'
+import { Users } from 'lucide-react'
 
 interface Friend {
   id: string
   username: string
   status: string
+}
+
+interface FriendshipProfile {
+  id: string
+  username: string
+  status: string
+  last_seen: string
+}
+
+interface Friendship {
+  id: string
+  sender: FriendshipProfile
+  receiver: FriendshipProfile
 }
 
 export default function Home() {
@@ -33,7 +48,8 @@ export default function Home() {
         )
       `)
       .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-      .eq('status', 'accepted');
+      .eq('status', 'accepted')
+      .returns<Friendship[]>();
 
     if (error) {
       console.error('Error fetching friends:', error);
@@ -65,7 +81,6 @@ export default function Home() {
 
     fetchFriends();
 
-    // Echtzeit-Updates für Profiländerungen
     const channel = supabase
       .channel('online-friends')
       .on(
@@ -79,7 +94,6 @@ export default function Home() {
       )
       .subscribe();
 
-    // Häufigeres Update der Freundesliste (alle 2 Sekunden)
     const updateInterval = setInterval(fetchFriends, 2000);
 
     return () => {
@@ -89,30 +103,62 @@ export default function Home() {
   }, [user]);
 
   return (
-    <div className="p-4">
-      <h1 className="text-2xl font-bold mb-6">Welcome back!</h1>
+    <div className="p-8">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
+        <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">
+          Welcome back!
+        </h1>
+        <p className="text-gray-400 mb-8">Here's what's happening with your friends</p>
+      </motion.div>
       
-      <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-4">
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
-          </svg>
-          <h2 className="text-xl">Online Friends</h2>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.2 }}
+        className="bg-gray-800/50 backdrop-blur-xl rounded-2xl p-6 border border-gray-700/50 shadow-xl"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-3 bg-indigo-500/10 rounded-xl">
+            <Users className="w-6 h-6 text-indigo-500" />
+          </div>
+          <h2 className="text-xl font-semibold text-white">Online Friends</h2>
         </div>
 
         {onlineFriends.length === 0 ? (
-          <p className="text-gray-400">No friends online</p>
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.4 }}
+            className="text-gray-400 text-center py-8"
+          >
+            No friends online right now
+          </motion.p>
         ) : (
-          <ul className="space-y-2">
-            {onlineFriends.map((friend) => (
-              <li key={friend.id} className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                <span>{friend.username}</span>
-              </li>
+          <div className="space-y-3">
+            {onlineFriends.map((friend, index) => (
+              <motion.div
+                key={friend.id}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.2 + index * 0.1 }}
+                className="flex items-center gap-3 p-3 rounded-xl bg-gray-700/30 hover:bg-gray-700/50 transition-colors group"
+              >
+                <div className="relative">
+                  <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center text-lg font-bold text-white group-hover:scale-110 transition-transform">
+                    {friend.username.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-gray-800"></div>
+                </div>
+                <span className="text-gray-200 font-medium">{friend.username}</span>
+              </motion.div>
             ))}
-          </ul>
+          </div>
         )}
-      </div>
+      </motion.div>
     </div>
   )
 }

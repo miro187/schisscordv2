@@ -18,6 +18,8 @@ interface VoiceUser {
   id: string;
   username: string;
   isSpeaking: boolean;
+  avatar_url?: string | null;
+  isMuted?: boolean;
 }
 
 interface AudioDevice {
@@ -28,6 +30,8 @@ interface AudioDevice {
 interface PeerConnection {
   connection: RTCPeerConnection;
   stream: MediaStream;
+  audioElement?: HTMLAudioElement;
+  senders: RTCRtpSender[];
 }
 
 export default function VoiceChat({ channelId, userId, channelName }: VoiceChatProps) {
@@ -182,11 +186,14 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
         ]
       });
 
+      const senders: RTCRtpSender[] = [];
+
       // Lokalen Stream hinzufügen
       if (mediaStream.current) {
         mediaStream.current.getTracks().forEach(track => {
           if (mediaStream.current) {
-            pc.addTrack(track, mediaStream.current);
+            const sender = pc.addTrack(track, mediaStream.current);
+            senders.push(sender);
           }
         });
       }
@@ -196,14 +203,16 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
         const [remoteStream] = event.streams;
         
         // Erstelle Audio-Element für den Remote-Stream
-        const audio = new Audio();
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.volume = outputVolume / 100;
+        const audioElement = new Audio();
+        audioElement.srcObject = remoteStream;
+        audioElement.autoplay = true;
+        audioElement.volume = outputVolume / 100;
 
         // Speichere die Referenz
         if (peerConnections.current[targetUserId]) {
           peerConnections.current[targetUserId].stream = remoteStream;
+          peerConnections.current[targetUserId].audioElement = audioElement;
+          peerConnections.current[targetUserId].senders = senders;
           
           // Erstelle Spracherkennung für den Remote-Stream
           const remoteAudioContext = createVoiceDetector(remoteStream, targetUserId);
@@ -212,6 +221,7 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
           pc.addEventListener('connectionstatechange', () => {
             if (pc.connectionState === 'closed') {
               remoteAudioContext.close();
+              audioElement.remove();
             }
           });
         }
@@ -241,11 +251,18 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
     }
   };
 
+  const updateRemoteAudioState = (userId: string, isMuted: boolean) => {
+    const peerConnection = peerConnections.current[userId];
+    if (peerConnection?.audioElement) {
+      peerConnection.audioElement.muted = isMuted;
+    }
+  };
+
   const joinChannel = async () => {
     try {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('username')
+        .select('username, avatar_url')
         .eq('id', userId)
         .single();
 
@@ -260,7 +277,11 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            peerConnections.current[payload.from] = { connection: pc, stream: new MediaStream() };
+            peerConnections.current[payload.from] = { 
+              connection: pc, 
+              stream: new MediaStream(),
+              senders: []
+            };
 
             await channel.send({
               type: 'broadcast',
@@ -295,13 +316,27 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
         }
       });
 
-      // Presence Events
+      // Füge Event-Handler für Mute-Status hinzu
+      channel.on('broadcast', { event: 'mute-status' }, ({ payload }) => {
+        setUsers(prev => prev.map(user => 
+          user.id === payload.userId 
+            ? { ...user, isMuted: payload.isMuted }
+            : user
+        ));
+        
+        // Aktualisiere den Audio-Status für den Remote-User
+        updateRemoteAudioState(payload.userId, payload.isMuted);
+      });
+
+      // Update presence sync handler
       channel.on('presence', { event: 'sync' }, async () => {
         const state = channel.presenceState();
         const channelUsers = Object.values(state).flat().map((user: any) => ({
           id: user.user_id,
           username: user.username,
-          isSpeaking: false
+          avatar_url: user.avatar_url,
+          isSpeaking: false,
+          isMuted: user.isMuted || false
         }));
         setUsers(channelUsers);
 
@@ -313,7 +348,11 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
 
-              peerConnections.current[user.id] = { connection: pc, stream: new MediaStream() };
+              peerConnections.current[user.id] = { 
+                connection: pc, 
+                stream: new MediaStream(),
+                senders: []
+              };
 
               await channel.send({
                 type: 'broadcast',
@@ -337,7 +376,9 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
           ...newPresences.map((user: any) => ({
             id: user.user_id,
             username: user.username,
-            isSpeaking: false
+            avatar_url: user.avatar_url,
+            isSpeaking: false,
+            isMuted: user.isMuted || false
           }))
         ]);
       });
@@ -363,6 +404,8 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
       await channel.track({
         user_id: userId,
         username: profile?.username || 'Unknown User',
+        avatar_url: profile?.avatar_url,
+        isMuted: voiceState.isMuted,
         joined_at: new Date().toISOString()
       });
 
@@ -389,12 +432,25 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
   const toggleMute = () => {
     if (mediaStream.current) {
       const isMuted = !voiceState.isMuted;
+      
+      // Alle Audio-Tracks stummschalten
       mediaStream.current.getAudioTracks().forEach(track => {
         track.enabled = !isMuted;
       });
+      
+      // Aktualisiere auch die Sender in allen Peer Connections
+      Object.values(peerConnections.current).forEach(({ senders }) => {
+        senders.forEach(sender => {
+          const track = sender.track;
+          if (track && track.kind === 'audio') {
+            track.enabled = !isMuted;
+          }
+        });
+      });
+      
       setVoiceState(prev => ({ ...prev, isMuted }));
 
-      // Informiere andere Teilnehmer über Mute-Status
+      // Informiere andere Teilnehmer über den Mute-Status
       const channel = supabase.channel(`voice_${channelId}`);
       channel.send({
         type: 'broadcast',
@@ -823,9 +879,29 @@ export default function VoiceChat({ channelId, userId, channelName }: VoiceChatP
                   user.isSpeaking ? 'bg-green-500 bg-opacity-20' : 'bg-gray-700'
                 }`}
               >
-                <span className="text-white">{user.username}</span>
-                {user.isSpeaking && (
-                  <Mic className="text-green-500" size={16} />
+                <div className="flex items-center space-x-3">
+                  <div className="relative">
+                    <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center overflow-hidden">
+                      {user.avatar_url ? (
+                        <img 
+                          src={user.avatar_url} 
+                          alt={user.username} 
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-sm font-bold text-white">
+                          {user.username.charAt(0).toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    {user.isSpeaking && !user.isMuted && (
+                      <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-gray-800" />
+                    )}
+                  </div>
+                  <span className="text-white">{user.username}</span>
+                </div>
+                {user.isMuted && (
+                  <MicOff className="text-red-500" size={16} />
                 )}
               </div>
             ))}

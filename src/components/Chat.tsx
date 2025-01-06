@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
-import EmojiPicker from 'emoji-picker-react';
+import EmojiPicker, { Theme, Categories } from 'emoji-picker-react';
 import { Image, Smile, MoreVertical, Trash, Copy } from 'lucide-react';
 import { createPortal } from 'react-dom';
 
@@ -18,6 +18,10 @@ interface Message {
   receiver_id: string;
   created_at: string;
   image_url?: string;
+  file_url?: string;
+  file_name?: string;
+  file_type?: string;
+  file_size?: number;
 }
 
 interface MessageMenuProps {
@@ -86,6 +90,67 @@ const MessageMenu = ({ message, onDelete, onCopy, isOwner }: MessageMenuProps) =
   );
 };
 
+// Hilfsfunktion zum Erkennen und Umwandeln von URLs in Links
+const parseMessageContent = (content: string) => {
+  // Regex für URL-Erkennung (http, https, www)
+  const urlRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
+  
+  // Teile den Text in Stücke auf, wobei URLs separat behandelt werden
+  const parts = content.split(urlRegex);
+  
+  return parts.map((part, index) => {
+    if (!part) return null;
+    
+    // Prüfe ob der Teil eine URL ist
+    if (urlRegex.test(part)) {
+      const href = part.startsWith('www.') ? `https://${part}` : part;
+      return (
+        <a
+          key={index}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-400 hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {part}
+        </a>
+      );
+    }
+    
+    return <span key={index}>{part}</span>;
+  });
+};
+
+const formatTimestamp = (timestamp: string) => {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  // Formatiere das Datum
+  let dateStr = '';
+  if (date.toDateString() === today.toDateString()) {
+    dateStr = 'Heute';
+  } else if (date.toDateString() === yesterday.toDateString()) {
+    dateStr = 'Gestern';
+  } else {
+    dateStr = date.toLocaleDateString('de-DE', {
+      day: '2-digit',
+      month: '2-digit',
+      year: '2-digit'
+    });
+  }
+
+  // Formatiere die Uhrzeit
+  const timeStr = date.toLocaleTimeString('de-DE', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  return `${dateStr} ${timeStr}`;
+};
+
 const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
   const { user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -93,28 +158,50 @@ const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
   const [showEmojis, setShowEmojis] = useState(false);
   const [uploading, setUploading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isScrolling, setIsScrolling] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [deletingMessageIds, setDeletingMessageIds] = useState<string[]>([]);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+
+  const isNearBottom = () => {
+    if (messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      const threshold = 100; // Pixel-Schwelle zum unteren Rand
+      return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    }
+    return false;
+  };
+
+  const handleScroll = () => {
+    if (messagesContainerRef.current) {
+      setShouldAutoScroll(isNearBottom());
+    }
+  };
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.addEventListener('scroll', handleScroll);
+      return () => container.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
 
   const scrollToBottom = (smooth = true) => {
-    if (messagesContainerRef.current && !isScrolling) {
-      setIsScrolling(true);
-      
+    if (messagesContainerRef.current && shouldAutoScroll) {
       messagesContainerRef.current.scrollTo({
         top: messagesContainerRef.current.scrollHeight,
         behavior: smooth ? 'smooth' : 'auto'
       });
-
-      // Reset scrolling state after animation
-      setTimeout(() => setIsScrolling(false), 300);
     }
   };
 
   // Scroll wenn neue Nachrichten hinzugefügt werden
   useEffect(() => {
-    scrollToBottom();
+    if (messages.length > 0) {
+      scrollToBottom();
+    }
   }, [messages]);
 
   // Initial scroll ohne Animation
@@ -260,40 +347,128 @@ const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
   };
 
   const uploadImage = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Bitte wähle ein Bild aus');
+      return;
+    }
+
     setUploading(true);
     try {
+      // Prüfe Dateigröße (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('Datei darf nicht größer als 5MB sein');
+      }
+
       // Generiere einen einzigartigen Dateinamen
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const filePath = `${user?.id}/${fileName}`; // Speichere in Benutzer-spezifischem Ordner
+      const fileName = `${Date.now()}-${file.name}`;
+      const filePath = `${user?.id}/${fileName}`;
 
       // Lade das Bild hoch
       const { error: uploadError } = await supabase.storage
         .from('chat-images')
         .upload(filePath, file);
 
-      if (uploadError) {
-        console.error('Error uploading image:', uploadError);
-        return;
-      }
+      if (uploadError) throw uploadError;
 
-      // Hole die öffentliche URL des Bildes
-      const { data: { publicUrl } } = supabase.storage
+      // Hole die öffentliche URL
+      const { data } = supabase.storage
         .from('chat-images')
         .getPublicUrl(filePath);
 
+      // Optimistische UI-Aktualisierung
+      const optimisticMessage: Message = {
+        id: crypto.randomUUID(),
+        content: `📎 ${file.name}`,
+        sender_id: user?.id || '',
+        receiver_id: friendId,
+        created_at: new Date().toISOString(),
+        image_url: data.publicUrl
+      };
+
+      setMessages(prev => [...prev, optimisticMessage]);
+
       // Sende die Nachricht mit dem Bild
-      await supabase
+      const { error: messageError } = await supabase
         .from('messages')
         .insert({
           sender_id: user?.id,
           receiver_id: friendId,
-          content: '📷 Bild gesendet',
-          image_url: publicUrl
+          content: `📎 ${file.name}`,
+          image_url: data.publicUrl
         });
 
-    } catch (error) {
-      console.error('Error handling image upload:', error);
+      if (messageError) throw messageError;
+
+    } catch (error: any) {
+      console.error('Error uploading image:', error);
+      alert(error.message || 'Fehler beim Hochladen des Bildes');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const uploadFile = async (file: File) => {
+    if (file.type.startsWith('image/')) {
+      alert('Bitte nutze den Bild-Upload-Button für Bilder');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      // Prüfe Dateigröße (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('Datei darf nicht größer als 5MB sein');
+      }
+
+      // Generiere einen einzigartigen Dateinamen
+      const fileName = `${Date.now()}-${file.name}`;
+      const filePath = `${user?.id}/${fileName}`;
+
+      // Lade die Datei hoch
+      const { error: uploadError } = await supabase.storage
+        .from('chat-files')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      // Hole die öffentliche URL
+      const { data } = supabase.storage
+        .from('chat-files')
+        .getPublicUrl(filePath);
+
+      // Optimistische UI-Aktualisierung
+      const optimisticMessage: Message = {
+        id: crypto.randomUUID(),
+        content: `📎 ${file.name}`,
+        sender_id: user?.id || '',
+        receiver_id: friendId,
+        created_at: new Date().toISOString(),
+        file_url: data.publicUrl,
+        file_name: file.name,
+        file_type: file.type,
+        file_size: file.size
+      };
+
+      setMessages(prev => [...prev, optimisticMessage]);
+
+      // Sende die Nachricht mit der Datei
+      const { error: messageError } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: user?.id,
+          receiver_id: friendId,
+          content: `📎 ${file.name}`,
+          file_url: data.publicUrl,
+          file_name: file.name,
+          file_type: file.type,
+          file_size: file.size
+        });
+
+      if (messageError) throw messageError;
+
+    } catch (error: any) {
+      console.error('Error uploading file:', error);
+      alert(error.message || 'Fehler beim Hochladen der Datei');
     } finally {
       setUploading(false);
     }
@@ -388,6 +563,83 @@ const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
     return `${baseClasses} ${alignmentClasses} ${animationClasses} max-w-[75%]`;
   };
 
+  const renderFilePreview = (message: Message) => {
+    if (!message.file_url || !message.file_type) return null;
+
+    if (message.file_type.startsWith('image/')) {
+      return (
+        <img 
+          src={message.file_url} 
+          alt={message.file_name} 
+          className="max-w-xs rounded-lg cursor-pointer hover:opacity-90"
+          onClick={() => window.open(message.file_url, '_blank')}
+        />
+      );
+    }
+
+    if (message.file_type === 'text/plain') {
+      return (
+        <div className="max-w-xs p-3 bg-gray-700 rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-gray-300">{message.file_name}</span>
+            <button
+              onClick={() => message.file_url && downloadFile(message.file_url, message.file_name || 'file.txt')}
+              className="text-blue-400 hover:text-blue-300"
+            >
+              ⬇️
+            </button>
+          </div>
+          <div className="text-xs text-gray-400">
+            {formatFileSize(message.file_size || 0)}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="max-w-xs p-3 bg-gray-700 rounded-lg">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-300">{message.file_name}</span>
+          <button
+            onClick={() => message.file_url && downloadFile(message.file_url, message.file_name || 'file')}
+            className="text-blue-400 hover:text-blue-300"
+          >
+            ⬇️
+          </button>
+        </div>
+        <div className="text-xs text-gray-400 mt-1">
+          {formatFileSize(message.file_size || 0)}
+        </div>
+      </div>
+    );
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const downloadFile = async (fileUrl: string, fileName: string) => {
+    try {
+      const response = await fetch(fileUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert('Fehler beim Herunterladen der Datei');
+    }
+  };
+
   return (
     <div className="w-[800px] h-[500px] bg-gray-800 rounded-lg shadow-lg flex flex-col">
       {/* Chat Header */}
@@ -400,38 +652,40 @@ const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
       <div 
         ref={messagesContainerRef}
         className="flex-1 overflow-y-auto p-3 space-y-2 scroll-smooth min-h-0"
+        onScroll={handleScroll}
       >
         {messages.map(message => (
           <div key={message.id} className="flex flex-col space-y-1 mb-2">
-            {/* Absender Name - immer links ausgerichtet */}
-            <span className="text-xs text-gray-400 text-left w-full">
-              {message.sender_id === user?.id ? 'Du' : friendUsername}
-            </span>
+            {/* Absender Name und Timestamp */}
+            <div className="flex justify-between items-center w-full">
+              <span className="text-xs text-gray-400">
+                {message.sender_id === user?.id ? 'Du' : friendUsername}
+              </span>
+              <span className="text-xs text-gray-500">
+                {formatTimestamp(message.created_at)}
+              </span>
+            </div>
 
-            {/* Nachricht - immer links ausgerichtet */}
+            {/* Nachricht */}
             <div className="w-full flex">
-              <div className={getMessageClassName(message)}>
+              <div className={`group relative flex ${getMessageClassName(message)}`}>
+                <div className="flex-1 break-words">
+                  {message.file_url ? (
+                    renderFilePreview(message)
+                  ) : message.image_url ? (
+                    <img src={message.image_url} alt="Uploaded" className="max-w-md rounded-lg" />
+                  ) : (
+                    <p className="text-gray-100 whitespace-pre-wrap">
+                      {parseMessageContent(message.content)}
+                    </p>
+                  )}
+                </div>
                 <MessageMenu
                   message={message}
                   onDelete={() => deleteMessage(message.id)}
                   onCopy={() => copyMessage(message.content)}
                   isOwner={message.sender_id === user?.id}
                 />
-                
-                {message.image_url ? (
-                  <div className="max-w-[300px] max-h-[300px] overflow-hidden">
-                    <img 
-                      src={message.image_url} 
-                      alt="Geteiltes Bild"
-                      className="rounded w-full h-full object-contain"
-                      onLoad={scrollToBottom}
-                    />
-                  </div>
-                ) : (
-                  <p className="text-white text-[15px] whitespace-pre-wrap overflow-hidden">
-                    {message.content}
-                  </p>
-                )}
               </div>
             </div>
           </div>
@@ -446,48 +700,25 @@ const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
               <div className="bg-gray-800 rounded-lg shadow-lg border border-gray-700 overflow-hidden">
                 <EmojiPicker 
                   onEmojiClick={handleEmojiClick}
-                  theme="dark"
-                  searchPlaceHolder="Emoji suchen..."
+                  theme={Theme.DARK}
+                  searchPlaceholder="Emoji suchen..."
                   width="100%"
                   height={300}
-                  previewConfig={{
-                    showPreview: false
-                  }}
+                  lazyLoadEmojis
                   skinTonesDisabled
                   categories={[
                     {
                       name: "Smileys & Emotion",
-                      category: "smileys_people"
+                      category: Categories.SMILEYS_PEOPLE
                     },
                     {
                       name: "Symbols",
-                      category: "symbols"
+                      category: Categories.SYMBOLS
                     }
                   ]}
-                  lazyLoadEmojis
-                  customStyles={{
-                    input: {
-                      backgroundColor: '#374151',
-                      borderColor: '#4B5563',
-                      color: 'white',
-                      padding: '8px 12px'
-                    },
-                    emojiButton: {
-                      background: 'transparent',
-                      hover: '#374151'
-                    },
-                    searchWrapper: {
-                      backgroundColor: 'transparent',
-                      padding: '8px',
-                      borderBottom: '1px solid #4B5563'
-                    },
-                    categoryButton: {
-                      backgroundColor: 'transparent',
-                      hover: '#374151'
-                    },
-                    emojiList: {
-                      backgroundColor: 'transparent'
-                    }
+                  style={{
+                    backgroundColor: '#1F2937',
+                    border: '1px solid #374151'
                   }}
                 />
               </div>
@@ -504,20 +735,43 @@ const Chat = ({ friendId, friendUsername, onClose }: ChatProps) => {
           
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => imageInputRef.current?.click()}
             className="text-gray-400 hover:text-white"
+            disabled={uploading}
           >
             <Image size={22} />
           </button>
           
           <input
             type="file"
-            ref={fileInputRef}
-            className="hidden"
+            ref={imageInputRef}
             accept="image/*"
+            className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) uploadImage(file);
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="text-gray-400 hover:text-white"
+            disabled={uploading}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+              <polyline points="13 2 13 9 20 9"></polyline>
+            </svg>
+          </button>
+          
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) uploadFile(file);
             }}
           />
           

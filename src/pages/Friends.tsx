@@ -255,6 +255,38 @@ const Friends = () => {
     }
   };
 
+  // Hilfsfunktion zum Erkennen und Umwandeln von URLs in Links
+  const parseMessageContent = (content: string) => {
+    // Regex für URL-Erkennung (http, https, www)
+    const urlRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
+    
+    // Teile den Text in Stücke auf, wobei URLs separat behandelt werden
+    const parts = content.split(urlRegex);
+    
+    return parts.map((part, index) => {
+      if (!part) return null;
+      
+      // Prüfe ob der Teil eine URL ist
+      if (urlRegex.test(part)) {
+        const href = part.startsWith('www.') ? `https://${part}` : part;
+        return (
+          <a
+            key={index}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {part}
+          </a>
+        );
+      }
+      
+      return <span key={index}>{part}</span>;
+    });
+  };
+
   return (
     <div className="p-6">
       <h2 className="text-2xl font-bold text-white mb-6">Freunde</h2>
